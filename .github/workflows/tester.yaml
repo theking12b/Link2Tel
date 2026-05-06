@@ -1,48 +1,72 @@
-name: Check Disk Space (Safe Version)
+name: 🎯 link2telegram
 
 on:
   workflow_dispatch:
-
+    inputs:
+      url:
+        description: 'File URL to download'
+        required: true
+        type: string
+      chat_id:
+        description: 'Telegram Chat ID or @username'
+        required: true
+        type: string
+      caption:
+        description: 'Optional caption for the file'
+        required: false
+        type: string
+        default: 'Downloaded file👌😎'
 jobs:
-  check-space:
+  download-and-process:
+    name: 🚀 Download & Process YouTube Content
     runs-on: ubuntu-latest
-    
+    permissions:
+      contents: write
+
     steps:
-      - name: Show disk space usage
+      - name: 📂 Clone Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🔧 Install Dependencies
         run: |
-          echo "=== Disk Space Overview ==="
-          df -h
+          sudo apt-get update
+          sudo apt-get install -y zip curl jq aria2 git
+      - name: 📥 Downloading The File
+        run: |
+          mkdir -p downloads tmp_downloads
+          URL_LINE = os.environ['URL_LINE']
+          for URL in $URL_LINE; do
+            FILENAME=$(basename "$URL")
+            echo "⬇️ Downloading $URL -> $FILENAME"
+
+            aria2c \
+              --split=2 \
+              --max-connection-per-server=2 \
+              --min-split-size=90M \
+              --dir="tmp_downloads" \
+              "$URL"
           
-      - name: Show inode usage
-        run: |
-          echo -e "\n=== Inode Usage ==="
-          df -i
-          
-      - name: Show largest directories in home/workspace (safe)
-        run: |
-          echo -e "\n=== Largest Directories in Runner Workspace ==="
-          du -sh $GITHUB_WORKSPACE/* 2>/dev/null | sort -hr | head -20 || echo "No files yet"
-          
-      - name: Show disk usage of important paths
-        run: |
-          echo -e "\n=== Disk Usage of Key Directories ==="
-          for dir in /home /opt /usr /var /tmp; do
-            if [ -d "$dir" ]; then
-              echo "Disk usage of $dir:"
-              sudo du -sh "$dir" 2>/dev/null || echo "Cannot access $dir"
-              echo "---"
+          for FILE in tmp_downloads/*; do
+            [ -f "$FILE" ] || continue
+            SIZE=$(stat -c%s "$FILE")
+            LIMIT=$((1990 * 1024 * 1024))
+            BASENAME=$(basename "$FILE")
+
+            if [ "$SIZE" -gt "$LIMIT" ]; then
+              echo "✂️ $BASENAME is $(( SIZE / 1024 / 1024 ))MB — splitting with zip..."
+              # zip -s creates: file.zip, file.z01, file.z02, ...
+              zip -s 1990m "downloads/${BASENAME}.zip" -j "$FILE"
+              echo "✅ Parts: $(ls downloads/${BASENAME}* | wc -l)"
+            else
+              cp "$FILE" "downloads/$BASENAME"
             fi
           done
           
-      - name: Find large files in home directory (safe)
-        run: |
-          echo -e "\n=== Largest Files in /home (top 20) ==="
-          sudo find /home -type f -size +100M 2>/dev/null | head -20
-          
-      - name: Quick summary without scanning everything
-        run: |
-          echo -e "\n=== Quick Space Summary ==="
-          echo "Total space: $(df -h / | awk 'NR==2 {print $2}')"
-          echo "Used space: $(df -h / | awk 'NR==2 {print $3}')"
-          echo "Free space: $(df -h / | awk 'NR==2 {print $4}')"
-          echo "Usage: $(df -h / | awk 'NR==2 {print $5}')"
+          rm -rf tmp_downloads
+
+        env:
+          URL_LINE: ${{ github.event.inputs.url }}
+
+
