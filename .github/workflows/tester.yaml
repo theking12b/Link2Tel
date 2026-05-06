@@ -1,0 +1,48 @@
+name: Check Disk Space (Safe Version)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check-space:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Show disk space usage
+        run: |
+          echo "=== Disk Space Overview ==="
+          df -h
+          
+      - name: Show inode usage
+        run: |
+          echo -e "\n=== Inode Usage ==="
+          df -i
+          
+      - name: Show largest directories in home/workspace (safe)
+        run: |
+          echo -e "\n=== Largest Directories in Runner Workspace ==="
+          du -sh $GITHUB_WORKSPACE/* 2>/dev/null | sort -hr | head -20 || echo "No files yet"
+          
+      - name: Show disk usage of important paths
+        run: |
+          echo -e "\n=== Disk Usage of Key Directories ==="
+          for dir in /home /opt /usr /var /tmp; do
+            if [ -d "$dir" ]; then
+              echo "Disk usage of $dir:"
+              sudo du -sh "$dir" 2>/dev/null || echo "Cannot access $dir"
+              echo "---"
+            fi
+          done
+          
+      - name: Find large files in home directory (safe)
+        run: |
+          echo -e "\n=== Largest Files in /home (top 20) ==="
+          sudo find /home -type f -size +100M 2>/dev/null | head -20
+          
+      - name: Quick summary without scanning everything
+        run: |
+          echo -e "\n=== Quick Space Summary ==="
+          echo "Total space: $(df -h / | awk 'NR==2 {print $2}')"
+          echo "Used space: $(df -h / | awk 'NR==2 {print $3}')"
+          echo "Free space: $(df -h / | awk 'NR==2 {print $4}')"
+          echo "Usage: $(df -h / | awk 'NR==2 {print $5}')"
