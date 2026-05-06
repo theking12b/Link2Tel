@@ -1,12 +1,5 @@
 name: Check Disk Space
 
-on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-  workflow_dispatch:  # Allows manual trigger
-
 jobs:
   check-space:
     runs-on: ubuntu-latest  # or macos-latest, windows-latest
