@@ -1,24 +1,20 @@
-name: 🎯 link2telegram
+name: 🎯 Download & Upload to Telegram
 
 on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'File URL to download'
+        description: '🎬 YouTube Video URL or File URL'
         required: true
         type: string
       chat_id:
-        description: 'Telegram Chat ID or @username'
+        description: '💬 Telegram Chat ID (user or group)'
         required: true
         type: string
-      caption:
-        description: 'Optional caption for the file'
-        required: false
-        type: string
-        default: 'Downloaded file👌😎'
+
 jobs:
-  download-and-process:
-    name: 🚀 Download & Process YouTube Content
+  download-and-upload:
+    name: 🚀 Download & Upload to Telegram
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -32,31 +28,32 @@ jobs:
       - name: 🔧 Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y zip curl jq aria2 git
-      - name: 📥 Downloading The File
+          sudo apt-get install -y zip curl jq aria2 git split
+
+      - name: 📥 Download File
         run: |
           mkdir -p downloads tmp_downloads
-          URL_LINE = os.environ['URL_LINE']
-          for URL in $URL_LINE; do
-            FILENAME=$(basename "$URL")
-            echo "⬇️ Downloading $URL -> $FILENAME"
-
-            aria2c \
-              --split=2 \
-              --max-connection-per-server=2 \
-              --min-split-size=90M \
-              --dir="tmp_downloads" \
-              "$URL"
           
+          URL="$URL_LINE"
+          FILENAME=$(basename "$URL")
+          echo "⬇️ Downloading $URL -> $FILENAME"
+          
+          aria2c \
+            --split=2 \
+            --max-connection-per-server=2 \
+            --min-split-size=90M \
+            --dir="tmp_downloads" \
+            "$URL"
+          
+          # Process each downloaded file
           for FILE in tmp_downloads/*; do
             [ -f "$FILE" ] || continue
             SIZE=$(stat -c%s "$FILE")
-            LIMIT=$((1990 * 1024 * 1024))
+            LIMIT=$((1990 * 1024 * 1024))  # 1.99 GB limit for Telegram
             BASENAME=$(basename "$FILE")
-
+            
             if [ "$SIZE" -gt "$LIMIT" ]; then
               echo "✂️ $BASENAME is $(( SIZE / 1024 / 1024 ))MB — splitting with zip..."
-              # zip -s creates: file.zip, file.z01, file.z02, ...
               zip -s 1990m "downloads/${BASENAME}.zip" -j "$FILE"
               echo "✅ Parts: $(ls downloads/${BASENAME}* | wc -l)"
             else
@@ -69,4 +66,76 @@ jobs:
         env:
           URL_LINE: ${{ github.event.inputs.url }}
 
+      - name: 📤 Upload to Telegram
+        run: |
+          BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}"
+          CHAT_ID="${{ github.event.inputs.chat_id }}"
+          
+          # Send initial message
+          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            -d chat_id="${CHAT_ID}" \
+            -d text="🚀 Starting upload from workflow..."
+          
+          # Upload all files in downloads directory
+          for FILE in downloads/*; do
+            [ -f "$FILE" ] || continue
+            FILENAME=$(basename "$FILE")
+            FILESIZE=$(stat -c%s "$FILE")
+            FILESIZE_MB=$(( FILESIZE / 1024 / 1024 ))
+            
+            echo "📤 Uploading: $FILENAME (${FILESIZE_MB}MB)"
+            
+            # Detect file type for proper sending
+            case "${FILENAME,,}" in
+              *.jpg|*.jpeg|*.png|*.gif|*.bmp|*.webp)
+                METHOD="sendPhoto"
+                PARAM="photo"
+                ;;
+              *.mp4|*.avi|*.mkv|*.mov|*.webm)
+                METHOD="sendVideo"
+                PARAM="video"
+                ;;
+              *.mp3|*.wav|*.ogg|*.m4a|*.flac)
+                METHOD="sendAudio"
+                PARAM="audio"
+                ;;
+              *.pdf)
+                METHOD="sendDocument"
+                PARAM="document"
+                ;;
+              *.txt|*.zip|*.part.*|*)
+                METHOD="sendDocument"
+                PARAM="document"
+                ;;
+            esac
+            
+            # Upload with caption showing filename
+            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" \
+              -F "chat_id=${CHAT_ID}" \
+              -F "${PARAM}=@${FILE}" \
+              -F "caption=📁 ${FILENAME}\n📏 Size: ${FILESIZE_MB}MB"
+            
+            # Add small delay to avoid rate limiting
+            sleep 2
+          done
+          
+          # Send completion message
+          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            -d chat_id="${CHAT_ID}" \
+            -d text="✅ Upload complete! Total files: $(ls downloads | wc -l)"
+          
+          # Send split parts reassembly instructions if split was used
+          if ls downloads/*.part.* 1> /dev/null 2>&1; then
+            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+              -d chat_id="${CHAT_ID}" \
+              -d text="📦 *Split Archive Instructions*:\n\nTo reassemble:\n\`cat file.part.* > original_file\`\n\nOr download all parts and use:\n\`cat *.part.* > output.file\`\n\nParts will auto-reassemble when extracted." \
+              -d parse_mode="Markdown"
+          fi
+          
+          # Cleanup
+          rm -rf downloads
 
+      - name: 🧹 Cleanup
+        if: always()
+        run: |
+          rm -rf downloads tmp_downloads
