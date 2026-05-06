@@ -11,6 +11,11 @@ on:
         description: '💬 Telegram Chat ID (user or group)'
         required: true
         type: string
+      caption:
+        description: 'Optional caption for the file'
+        required: false
+        type: string
+        default: 'Downloaded file👌😎'
 
 jobs:
   download-and-upload:
@@ -28,16 +33,14 @@ jobs:
       - name: 🔧 Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y zip curl jq aria2 git split
+          sudo apt-get install -y zip curl jq aria2 git
 
       - name: 📥 Download File
         run: |
           mkdir -p downloads tmp_downloads
-          
-          URL="$URL_LINE"
           FILENAME=$(basename "$URL")
           echo "⬇️ Downloading $URL -> $FILENAME"
-          
+
           aria2c \
             --split=2 \
             --max-connection-per-server=2 \
@@ -54,6 +57,7 @@ jobs:
             
             if [ "$SIZE" -gt "$LIMIT" ]; then
               echo "✂️ $BASENAME is $(( SIZE / 1024 / 1024 ))MB — splitting with zip..."
+              # zip -s creates: file.zip, file.z01, file.z02, ...
               zip -s 1990m "downloads/${BASENAME}.zip" -j "$FILE"
               echo "✅ Parts: $(ls downloads/${BASENAME}* | wc -l)"
             else
@@ -64,7 +68,7 @@ jobs:
           rm -rf tmp_downloads
 
         env:
-          URL_LINE: ${{ github.event.inputs.url }}
+          URL: ${{ github.event.inputs.url }}
 
       - name: 📤 Upload to Telegram
         run: |
