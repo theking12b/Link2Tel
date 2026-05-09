@@ -1,0 +1,180 @@
+name: 🎯 Download & Upload to Telegram V2
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: '🎬 File URL'
+        required: true
+        type: string
+      chat_id:
+        description: '💬 Telegram Chat ID'
+        required: true
+        type: string
+      caption:
+        description: 'Optional caption'
+        required: false
+        type: string
+        default: 'Downloaded file👌😎'
+
+jobs:
+  download-and-upload:
+    name: 🚀 Download & Upload to Telegram
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 🔧 Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl jq aria2 wget
+
+      - name: 🤖 Setup Local Telegram Bot API Server
+        run: |
+          # Download pre-built binary
+          wget -q https://github.com/tdlib/telegram-bot-api/releases/download/v8.3/telegram-bot-api-amd64-linux -O telegram-bot-api
+          chmod +x telegram-bot-api
+
+          # Start local bot API server (raises limit to 2GB)
+          ./telegram-bot-api \
+            --api-id=${{ secrets.TELEGRAM_API_ID }} \
+            --api-hash=${{ secrets.TELEGRAM_API_HASH }} \
+            --local \
+            --dir="bot-data" \
+            &
+
+          # Wait for server to be ready
+          echo "⏳ Waiting for local Bot API server..."
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8081/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/getMe > /dev/null; then
+              echo "✅ Bot API server is up!"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: 📥 Download File
+        run: |
+          mkdir -p downloads tmp_downloads
+          FILENAME=$(basename "$URL")
+          echo "⬇️ Downloading: $FILENAME"
+
+          aria2c \
+            --split=8 \
+            --max-connection-per-server=8 \
+            --min-split-size=20M \
+            --dir="tmp_downloads" \
+            --out="$FILENAME" \
+            "$URL"
+
+          # Split only if over 1.95GB (local API limit is 2GB, stay safe)
+          for FILE in tmp_downloads/*; do
+            [ -f "$FILE" ] || continue
+            SIZE=$(stat -c%s "$FILE")
+            LIMIT=$((1950 * 1024 * 1024))
+            BASENAME=$(basename "$FILE")
+
+            if [ "$SIZE" -gt "$LIMIT" ]; then
+              echo "✂️ $BASENAME is $(( SIZE / 1024 / 1024 ))MB — splitting into 1.95GB parts..."
+              mkdir -p "downloads/${BASENAME}_parts"
+              split \
+                --bytes=1950m \
+                --numeric-suffixes=1 \
+                --suffix-length=3 \
+                --additional-suffix=".part" \
+                "$FILE" \
+                "downloads/${BASENAME}_parts/${BASENAME}."
+              echo "✅ Parts: $(ls downloads/${BASENAME}_parts | wc -l)"
+            else
+              cp "$FILE" "downloads/$BASENAME"
+            fi
+          done
+
+          rm -rf tmp_downloads
+        env:
+          URL: ${{ github.event.inputs.url }}
+
+      - name: 📤 Upload to Telegram
+        run: |
+          # Use local server instead of api.telegram.org
+          LOCAL_API="http://127.0.0.1:8081"
+          BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}"
+          CHAT_ID="${{ github.event.inputs.chat_id }}"
+          CAPTION="${{ github.event.inputs.caption }}"
+
+          upload_file() {
+            local FILE="$1"
+            local CAPTION_TEXT="$2"
+            local FILENAME=$(basename "$FILE")
+            local FILESIZE_MB=$(( $(stat -c%s "$FILE") / 1024 / 1024 ))
+
+            echo "📤 Uploading: $FILENAME (${FILESIZE_MB}MB)"
+
+            local RESPONSE HTTP_CODE
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+              "${LOCAL_API}/bot${BOT_TOKEN}/sendDocument" \
+              -F "chat_id=${CHAT_ID}" \
+              -F "document=@${FILE}" \
+              -F "caption=${CAPTION_TEXT}" \
+              --max-time 3600)
+
+            HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "❌ Failed: $FILENAME (HTTP $HTTP_CODE)"
+              echo "$RESPONSE" | head -n-1
+              curl -s -X POST "${LOCAL_API}/bot${BOT_TOKEN}/sendMessage" \
+                -d chat_id="${CHAT_ID}" \
+                -d text="❌ Failed to upload ${FILENAME} (HTTP ${HTTP_CODE})"
+            else
+              echo "✅ Uploaded: $FILENAME"
+            fi
+
+            sleep 1
+          }
+
+          curl -s -X POST "${LOCAL_API}/bot${BOT_TOKEN}/sendMessage" \
+            -d chat_id="${CHAT_ID}" \
+            -d text="🚀 Starting upload..."
+
+          # Upload whole files
+          for FILE in downloads/*; do
+            [ -f "$FILE" ] || continue
+            FILENAME=$(basename "$FILE")
+            FILESIZE_MB=$(( $(stat -c%s "$FILE") / 1024 / 1024 ))
+            upload_file "$FILE" "📁 ${FILENAME} | 📏 ${FILESIZE_MB}MB | ${CAPTION}"
+          done
+
+          # Upload split parts
+          for PART_DIR in downloads/*/; do
+            [ -d "$PART_DIR" ] || continue
+            ORIGINAL_NAME=$(basename "$PART_DIR" | sed 's/_parts$//')
+            PART_COUNT=$(ls "$PART_DIR" | wc -l)
+
+            curl -s -X POST "${LOCAL_API}/bot${BOT_TOKEN}/sendMessage" \
+              -d chat_id="${CHAT_ID}" \
+              -d text="📦 Uploading ${ORIGINAL_NAME} in ${PART_COUNT} parts (1.95GB each)..."
+
+            PART_NUM=0
+            for PART in $(ls "$PART_DIR" | sort); do
+              PART_NUM=$(( PART_NUM + 1 ))
+              FILESIZE_MB=$(( $(stat -c%s "${PART_DIR}${PART}") / 1024 / 1024 ))
+              upload_file "${PART_DIR}${PART}" "🗂 ${ORIGINAL_NAME} | Part ${PART_NUM}/${PART_COUNT} | 📏 ${FILESIZE_MB}MB"
+            done
+
+            curl -s -X POST "${LOCAL_API}/bot${BOT_TOKEN}/sendMessage" \
+              -d chat_id="${CHAT_ID}" \
+              --data-urlencode text="📋 To reassemble ${ORIGINAL_NAME}:
+cat ${ORIGINAL_NAME}.*.part > ${ORIGINAL_NAME}"
+          done
+
+          curl -s -X POST "${LOCAL_API}/bot${BOT_TOKEN}/sendMessage" \
+            -d chat_id="${CHAT_ID}" \
+            -d text="✅ All uploads complete!"
+
+          rm -rf downloads
+
+      - name: 🧹 Cleanup
+        if: always()
+        run: |
+          pkill telegram-bot-api || true
+          rm -rf downloads tmp_downloads bot-data
