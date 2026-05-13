@@ -1,4 +1,4 @@
-name: 🎯 Download & Upload to Telegram v6
+name: 🎯 Download & Upload to Telegram v7
 
 on:
   workflow_dispatch:
@@ -23,39 +23,30 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 🔧 Install Dependencies
+      - name: ⬇️ Checkout repo (to get pre-built binary)
+        uses: actions/checkout@v4
+
+      - name: 🔧 Install runtime dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            curl jq aria2 zip \
-            build-essential cmake git \
-            libssl-dev zlib1g-dev gperf
+          sudo apt-get install -y curl jq aria2 zip
 
-      - name: 🔨 Build Telegram Bot API Server from Source
+      - name: ✅ Verify pre-built binary
         run: |
-          echo "📥 Cloning telegram-bot-api..."
-          git clone --recursive https://github.com/tdlib/telegram-bot-api.git
-          cd telegram-bot-api
-
-          mkdir build && cd build
-
-          echo "⚙️ Configuring..."
-          cmake -DCMAKE_BUILD_TYPE=Release ..
-
-          echo "🔨 Building (this takes ~10-15 min)..."
-          cmake --build . --target telegram-bot-api -j$(nproc)
-
-          # Move binary to workspace root
-          cp telegram-bot-api ../../telegram-bot-api-bin
-          cd ../..
-          echo "✅ Build complete"
-          ./telegram-bot-api-bin --version
+          if [ ! -f "bin/telegram-bot-api-bin" ]; then
+            echo "❌ Pre-built binary not found at bin/telegram-bot-api-bin"
+            echo "👉 Run the 'Build & Store Telegram Bot API Binary' workflow first"
+            exit 1
+          fi
+          chmod +x bin/telegram-bot-api-bin
+          echo "✅ Binary ready:"
+          ./bin/telegram-bot-api-bin --version
 
       - name: 🤖 Start Local Telegram Bot API Server
         run: |
           mkdir -p bot-data
 
-          ./telegram-bot-api-bin \
+          ./bin/telegram-bot-api-bin \
             --api-id=${{ secrets.TELEGRAM_API_ID }} \
             --api-hash=${{ secrets.TELEGRAM_API_HASH }} \
             --local \
@@ -63,7 +54,6 @@ jobs:
             --http-port=8081 \
             &
 
-          # Wait for server — hard fail if it never starts
           echo "⏳ Waiting for local Bot API server..."
           READY=0
           for i in $(seq 1 30); do
@@ -82,7 +72,6 @@ jobs:
         run: |
           mkdir -p downloads tmp_downloads
 
-          # Strip query strings and fragments to get a clean filename
           FILENAME=$(basename "$URL" | sed 's/[?#].*//')
           echo "⬇️ Downloading: $FILENAME"
 
@@ -94,7 +83,6 @@ jobs:
             --out="$FILENAME" \
             "$URL"
 
-          # 1.95GB safe limit for local Bot API (actual limit is 2GB)
           LIMIT=$((1950 * 1024 * 1024))
 
           for FILE in tmp_downloads/*; do
@@ -104,7 +92,7 @@ jobs:
             BASENAME=$(basename "$FILE")
 
             if [ "$SIZE" -gt "$LIMIT" ]; then
-              echo "✂️ ${BASENAME} is ${SIZE_MB}MB — splitting with max compression..."
+              echo "✂️ ${BASENAME} is ${SIZE_MB}MB — splitting..."
               zip -9 -j -s 1950m "downloads/${BASENAME}.zip" "$FILE"
               echo "✅ Created $(ls downloads/ | wc -l) part(s)"
             else
@@ -114,7 +102,6 @@ jobs:
           done
 
           rm -rf tmp_downloads
-
           echo "📦 Files ready to upload:"
           ls -lh downloads/
 
@@ -168,11 +155,10 @@ jobs:
             upload_file "$FILE" "📁 ${FILENAME} | 📏 ${FILESIZE_MB}MB | ${CAPTION}"
           done
 
-          # Send reassembly instructions if zip parts were created
           if ls downloads/*.z[0-9]* 1>/dev/null 2>&1 || ls downloads/*.zip 1>/dev/null 2>&1; then
             curl -s -X POST "${LOCAL_API}/bot${BOT_TOKEN}/sendMessage" \
               -d chat_id="${CHAT_ID}" \
-              -d text="📦 Split archive detected. To reassemble: download all parts (.zip, .z01, .z02 ...) into the same folder and extract the .zip — any archiver (7-Zip, WinRAR, unzip) will join them automatically."
+              -d text="📦 Split archive detected. Download all parts into the same folder and extract the .zip — 7-Zip, WinRAR, or unzip will join them automatically."
           fi
 
           curl -s -X POST "${LOCAL_API}/bot${BOT_TOKEN}/sendMessage" \
@@ -183,4 +169,4 @@ jobs:
         if: always()
         run: |
           pkill telegram-bot-api-bin || true
-          rm -rf downloads tmp_downloads bot-data telegram-bot-api telegram-bot-api-bin
+          rm -rf downloads tmp_downloads bot-data
