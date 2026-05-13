@@ -1,4 +1,4 @@
-name: 🎯 Download & Upload to Telegram
+name: 🎯 Download & Upload to Telegram v3
 
 on:
   workflow_dispatch:
