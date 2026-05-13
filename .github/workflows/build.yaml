@@ -1,0 +1,75 @@
+name: 🔨 Build & Store Telegram Bot API Binary
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-tgapi.yml'  # re-build only if this file changes
+
+jobs:
+  build:
+    name: 🏗️ Build telegram-bot-api
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: ⬇️ Checkout repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🔧 Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake git \
+            libssl-dev zlib1g-dev gperf
+
+      - name: 🔨 Build telegram-bot-api from source
+        run: |
+          git clone --recursive https://github.com/tdlib/telegram-bot-api.git
+          cd telegram-bot-api
+          mkdir build && cd build
+          cmake -DCMAKE_BUILD_TYPE=Release ..
+          cmake --build . --target telegram-bot-api -j$(nproc)
+          cp telegram-bot-api ../../telegram-bot-api-bin
+          cd ../..
+          echo "✅ Build complete — version:"
+          ./telegram-bot-api-bin --version
+
+      - name: 📤 Commit & Push binary in batches
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          mkdir -p bin
+          cp telegram-bot-api-bin bin/telegram-bot-api-bin
+          chmod +x bin/telegram-bot-api-bin
+
+          mapfile -t ALL_FILES < <(git ls-files --others --modified --exclude-standard bin/)
+
+          TOTAL=${#ALL_FILES[@]}
+          echo "📦 Total files to push: $TOTAL"
+
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "Binary unchanged — nothing to commit"
+            exit 0
+          fi
+
+          BATCH_SIZE=5
+          BATCH_NUM=0
+
+          for (( i=0; i<TOTAL; i+=BATCH_SIZE )); do
+            BATCH_NUM=$(( BATCH_NUM + 1 ))
+            BATCH=("${ALL_FILES[@]:i:BATCH_SIZE}")
+
+            echo "🚀 Pushing batch $BATCH_NUM: files $((i+1))–$(( i + ${#BATCH[@]} )) of $TOTAL"
+
+            git add "${BATCH[@]}"
+            git commit -m "chore: update pre-built telegram-bot-api binary — batch $BATCH_NUM [skip ci]"
+
+            git pull --rebase origin "$BRANCH"
+            git push origin HEAD:"$BRANCH"
+
+            echo "✅ Batch $BATCH_NUM pushed"
+          done
