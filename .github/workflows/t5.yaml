@@ -1,4 +1,4 @@
-name: 🎯 Download & Upload to Telegram v5
+name: 🎯 Download & Upload to Telegram v6
 
 on:
   workflow_dispatch:
@@ -26,30 +26,55 @@ jobs:
       - name: 🔧 Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl jq aria2 zip
+          sudo apt-get install -y \
+            curl jq aria2 zip \
+            build-essential cmake git \
+            libssl-dev zlib1g-dev gperf
 
-      - name: 🤖 Setup Local Telegram Bot API Server
+      - name: 🔨 Build Telegram Bot API Server from Source
         run: |
-          docker run -d \
-            --name telegram-bot-api \
-            --network host \
-            -v $(pwd)/bot-data:/var/lib/telegram-bot-api \
-            aiogram/telegram-bot-api:latest \
+          echo "📥 Cloning telegram-bot-api..."
+          git clone --recursive https://github.com/tdlib/telegram-bot-api.git
+          cd telegram-bot-api
+
+          mkdir build && cd build
+
+          echo "⚙️ Configuring..."
+          cmake -DCMAKE_BUILD_TYPE=Release ..
+
+          echo "🔨 Building (this takes ~10-15 min)..."
+          cmake --build . --target telegram-bot-api -j$(nproc)
+
+          # Move binary to workspace root
+          cp telegram-bot-api ../../telegram-bot-api-bin
+          cd ../..
+          echo "✅ Build complete"
+          ./telegram-bot-api-bin --version
+
+      - name: 🤖 Start Local Telegram Bot API Server
+        run: |
+          mkdir -p bot-data
+
+          ./telegram-bot-api-bin \
             --api-id=${{ secrets.TELEGRAM_API_ID }} \
             --api-hash=${{ secrets.TELEGRAM_API_HASH }} \
-            --local
-            
+            --local \
+            --dir="bot-data" \
+            --http-port=8081 \
+            &
+
+          # Wait for server — hard fail if it never starts
           echo "⏳ Waiting for local Bot API server..."
           READY=0
           for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:8081/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/getMe > /dev/null; then
+            if curl -sf "http://127.0.0.1:8081/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/getMe" > /dev/null; then
               echo "✅ Bot API server is up!"
               READY=1
               break
             fi
             sleep 2
           done
-          [ "$READY" -eq 1 ] || { echo "❌ Server failed to start after 60s"; exit 1; }
+          [ "$READY" -eq 1 ] || { echo "❌ Server failed to start"; exit 1; }
 
       - name: 📥 Download File
         env:
@@ -157,6 +182,5 @@ jobs:
       - name: 🧹 Cleanup
         if: always()
         run: |
-          docker stop telegram-bot-api || true
-          docker rm telegram-bot-api || true
-          rm -rf downloads tmp_downloads bot-data
+          pkill telegram-bot-api-bin || true
+          rm -rf downloads tmp_downloads bot-data telegram-bot-api telegram-bot-api-bin
