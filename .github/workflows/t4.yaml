@@ -1,4 +1,4 @@
-name: 🎯 Download & Upload to Telegram v3
+name: 🎯 Download & Upload to Telegram
 
 on:
   workflow_dispatch:
@@ -26,23 +26,19 @@ jobs:
       - name: 🔧 Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl jq aria2 wget zip
+          sudo apt-get install -y curl jq aria2 zip
 
       - name: 🤖 Setup Local Telegram Bot API Server
         run: |
-          # Fetch latest release version dynamically
-          LATEST=$(curl -s https://api.github.com/repos/tdlib/telegram-bot-api/releases/latest | jq -r '.tag_name')
-          echo "📦 Downloading telegram-bot-api ${LATEST}..."
-          wget -q "https://github.com/tdlib/telegram-bot-api/releases/download/${LATEST}/telegram-bot-api-amd64-linux" -O telegram-bot-api
-          chmod +x telegram-bot-api
-
-          # Start local bot API server (raises limit to 2GB)
-          ./telegram-bot-api \
+          # Run the official telegram-bot-api Docker image (replaces deleted prebuilt binaries)
+          docker run -d \
+            --name telegram-bot-api \
+            --network host \
+            -v $(pwd)/bot-data:/var/lib/telegram-bot-api \
+            aiogram/telegram-bot-api:latest \
             --api-id=${{ secrets.TELEGRAM_API_ID }} \
             --api-hash=${{ secrets.TELEGRAM_API_HASH }} \
-            --local \
-            --dir="bot-data" \
-            &
+            --local
 
           # Wait for server — hard fail if it never starts
           echo "⏳ Waiting for local Bot API server..."
@@ -86,7 +82,6 @@ jobs:
 
             if [ "$SIZE" -gt "$LIMIT" ]; then
               echo "✂️ ${BASENAME} is ${SIZE_MB}MB — splitting with max compression..."
-              # -9 = maximum compression | -j = junk paths | -s = split size
               zip -9 -j -s 1950m "downloads/${BASENAME}.zip" "$FILE"
               echo "✅ Created $(ls downloads/ | wc -l) part(s)"
             else
@@ -164,5 +159,6 @@ jobs:
       - name: 🧹 Cleanup
         if: always()
         run: |
-          pkill telegram-bot-api || true
+          docker stop telegram-bot-api || true
+          docker rm telegram-bot-api || true
           rm -rf downloads tmp_downloads bot-data
