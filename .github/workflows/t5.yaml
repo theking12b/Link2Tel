@@ -83,7 +83,7 @@ jobs:
             --out="$FILENAME" \
             "$URL"
 
-          LIMIT=$((1950 * 1024 * 1024))
+          LIMIT=$((1980 * 1024 * 1024))
 
           for FILE in tmp_downloads/*; do
             [ -f "$FILE" ] || continue
@@ -93,7 +93,7 @@ jobs:
 
             if [ "$SIZE" -gt "$LIMIT" ]; then
               echo "✂️ ${BASENAME} is ${SIZE_MB}MB — splitting..."
-              zip -9 -j -s 1950m "downloads/${BASENAME}.zip" "$FILE"
+              zip -9 -j -s 1980m "downloads/${BASENAME}.zip" "$FILE"
               echo "✅ Created $(ls downloads/ | wc -l) part(s)"
             else
               echo "✅ ${BASENAME} is ${SIZE_MB}MB — no split needed"
