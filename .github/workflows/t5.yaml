@@ -1,4 +1,4 @@
-name: 🎯 Download & Upload to Telegram
+name: 🎯 Download & Upload to Telegram v5
 
 on:
   workflow_dispatch:
@@ -30,7 +30,6 @@ jobs:
 
       - name: 🤖 Setup Local Telegram Bot API Server
         run: |
-          # Run the official telegram-bot-api Docker image (replaces deleted prebuilt binaries)
           docker run -d \
             --name telegram-bot-api \
             --network host \
@@ -39,8 +38,7 @@ jobs:
             --api-id=${{ secrets.TELEGRAM_API_ID }} \
             --api-hash=${{ secrets.TELEGRAM_API_HASH }} \
             --local
-
-          # Wait for server — hard fail if it never starts
+            
           echo "⏳ Waiting for local Bot API server..."
           READY=0
           for i in $(seq 1 30); do
