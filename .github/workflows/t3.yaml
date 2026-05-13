@@ -1,0 +1,168 @@
+name: 🎯 Download & Upload to Telegram
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: '🎬 File URL'
+        required: true
+        type: string
+      chat_id:
+        description: '💬 Telegram Chat ID'
+        required: true
+        type: string
+      caption:
+        description: 'Optional caption'
+        required: false
+        type: string
+        default: 'Downloaded file👌😎'
+
+jobs:
+  download-and-upload:
+    name: 🚀 Download & Upload to Telegram
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 🔧 Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl jq aria2 wget zip
+
+      - name: 🤖 Setup Local Telegram Bot API Server
+        run: |
+          # Fetch latest release version dynamically
+          LATEST=$(curl -s https://api.github.com/repos/tdlib/telegram-bot-api/releases/latest | jq -r '.tag_name')
+          echo "📦 Downloading telegram-bot-api ${LATEST}..."
+          wget -q "https://github.com/tdlib/telegram-bot-api/releases/download/${LATEST}/telegram-bot-api-amd64-linux" -O telegram-bot-api
+          chmod +x telegram-bot-api
+
+          # Start local bot API server (raises limit to 2GB)
+          ./telegram-bot-api \
+            --api-id=${{ secrets.TELEGRAM_API_ID }} \
+            --api-hash=${{ secrets.TELEGRAM_API_HASH }} \
+            --local \
+            --dir="bot-data" \
+            &
+
+          # Wait for server — hard fail if it never starts
+          echo "⏳ Waiting for local Bot API server..."
+          READY=0
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8081/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/getMe > /dev/null; then
+              echo "✅ Bot API server is up!"
+              READY=1
+              break
+            fi
+            sleep 2
+          done
+          [ "$READY" -eq 1 ] || { echo "❌ Server failed to start after 60s"; exit 1; }
+
+      - name: 📥 Download File
+        env:
+          URL: ${{ github.event.inputs.url }}
+        run: |
+          mkdir -p downloads tmp_downloads
+
+          # Strip query strings and fragments to get a clean filename
+          FILENAME=$(basename "$URL" | sed 's/[?#].*//')
+          echo "⬇️ Downloading: $FILENAME"
+
+          aria2c \
+            --split=8 \
+            --max-connection-per-server=8 \
+            --min-split-size=20M \
+            --dir="tmp_downloads" \
+            --out="$FILENAME" \
+            "$URL"
+
+          # 1.95GB safe limit for local Bot API (actual limit is 2GB)
+          LIMIT=$((1950 * 1024 * 1024))
+
+          for FILE in tmp_downloads/*; do
+            [ -f "$FILE" ] || continue
+            SIZE=$(stat -c%s "$FILE")
+            SIZE_MB=$(( SIZE / 1024 / 1024 ))
+            BASENAME=$(basename "$FILE")
+
+            if [ "$SIZE" -gt "$LIMIT" ]; then
+              echo "✂️ ${BASENAME} is ${SIZE_MB}MB — splitting with max compression..."
+              # -9 = maximum compression | -j = junk paths | -s = split size
+              zip -9 -j -s 1950m "downloads/${BASENAME}.zip" "$FILE"
+              echo "✅ Created $(ls downloads/ | wc -l) part(s)"
+            else
+              echo "✅ ${BASENAME} is ${SIZE_MB}MB — no split needed"
+              cp "$FILE" "downloads/$BASENAME"
+            fi
+          done
+
+          rm -rf tmp_downloads
+
+          echo "📦 Files ready to upload:"
+          ls -lh downloads/
+
+      - name: 📤 Upload to Telegram
+        run: |
+          LOCAL_API="http://127.0.0.1:8081"
+          BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}"
+          CHAT_ID="${{ github.event.inputs.chat_id }}"
+          CAPTION="${{ github.event.inputs.caption }}"
+
+          upload_file() {
+            local FILE="$1"
+            local CAPTION_TEXT="$2"
+            local FILENAME=$(basename "$FILE")
+            local FILESIZE_MB=$(( $(stat -c%s "$FILE") / 1024 / 1024 ))
+
+            echo "📤 Uploading: $FILENAME (${FILESIZE_MB}MB)"
+
+            local RESPONSE HTTP_CODE
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+              "${LOCAL_API}/bot${BOT_TOKEN}/sendDocument" \
+              -F "chat_id=${CHAT_ID}" \
+              -F "document=@${FILE}" \
+              -F "caption=${CAPTION_TEXT}" \
+              --max-time 3600)
+
+            HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "❌ Failed: $FILENAME (HTTP $HTTP_CODE)"
+              echo "$RESPONSE" | head -n-1
+              curl -s -X POST "${LOCAL_API}/bot${BOT_TOKEN}/sendMessage" \
+                -d chat_id="${CHAT_ID}" \
+                -d text="❌ Failed to upload ${FILENAME} (HTTP ${HTTP_CODE})"
+            else
+              echo "✅ Uploaded: $FILENAME"
+            fi
+
+            sleep 1
+          }
+
+          TOTAL=$(ls downloads/ | wc -l)
+          curl -s -X POST "${LOCAL_API}/bot${BOT_TOKEN}/sendMessage" \
+            -d chat_id="${CHAT_ID}" \
+            -d text="🚀 Starting upload — ${TOTAL} file(s) queued..."
+
+          for FILE in downloads/*; do
+            [ -f "$FILE" ] || continue
+            FILENAME=$(basename "$FILE")
+            FILESIZE_MB=$(( $(stat -c%s "$FILE") / 1024 / 1024 ))
+            upload_file "$FILE" "📁 ${FILENAME} | 📏 ${FILESIZE_MB}MB | ${CAPTION}"
+          done
+
+          # Send reassembly instructions if zip parts were created
+          if ls downloads/*.z[0-9]* 1>/dev/null 2>&1 || ls downloads/*.zip 1>/dev/null 2>&1; then
+            curl -s -X POST "${LOCAL_API}/bot${BOT_TOKEN}/sendMessage" \
+              -d chat_id="${CHAT_ID}" \
+              -d text="📦 Split archive detected. To reassemble: download all parts (.zip, .z01, .z02 ...) into the same folder and extract the .zip — any archiver (7-Zip, WinRAR, unzip) will join them automatically."
+          fi
+
+          curl -s -X POST "${LOCAL_API}/bot${BOT_TOKEN}/sendMessage" \
+            -d chat_id="${CHAT_ID}" \
+            -d text="✅ All uploads complete!"
+
+      - name: 🧹 Cleanup
+        if: always()
+        run: |
+          pkill telegram-bot-api || true
+          rm -rf downloads tmp_downloads bot-data
