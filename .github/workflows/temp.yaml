@@ -8,6 +8,7 @@ name: OpenCore macrecovery Downloader
 #   Manual → fill in the inputs below
 # ─────────────────────────────────────────────
 on:
+
   workflow_dispatch:
     inputs:
       board_id:
@@ -100,6 +101,13 @@ jobs:
       #    All required libraries (argparse, hashlib, json, linecache, os,
       #    random, struct, string, sys) are part of the Python standard library
       #    — no pip install step is needed.
+      #
+      #    macrecovery.py calls os.get_terminal_size() to draw a progress bar.
+      #    GitHub Actions runners have no TTY, so that call raises:
+      #      OSError: [Errno 25] Inappropriate ioctl for device
+      #    Fix: wrap execution inside `script`, which allocates a pseudo-TTY.
+      #    `script` is part of util-linux and ships on every Ubuntu runner —
+      #    no apt-get install required.
       - name: Run macrecovery.py
         if: steps.params.outputs.should_run == 'true'
         run: |
@@ -112,11 +120,11 @@ jobs:
           echo "   board-id : $BOARD_ID"
           echo "   mlb      : $MLB"
 
-          python3 "$SCRIPT" \
-            -b "$BOARD_ID" \
-            -m "$MLB" \
-            -o recovery_output \
-            download
+          # `script -q -c "…" /dev/null` runs the command inside a real PTY so
+          # that os.get_terminal_size() succeeds. Exit code is forwarded.
+          script -q -c \
+            "python3 '$SCRIPT' -b '$BOARD_ID' -m '$MLB' -o recovery_output download" \
+            /dev/null
 
           echo "✅ macrecovery finished. Output files:"
           ls -lah recovery_output/
