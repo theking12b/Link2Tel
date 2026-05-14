@@ -1,0 +1,191 @@
+name: OpenCore macrecovery Downloader
+
+# ─────────────────────────────────────────────
+# Triggers
+#   Push  → commit message must contain macrecovery:
+#             macrecovery: board-id:Mac-827FAC58A8FDFA22 mlb:00000000000000000
+#
+#   Manual → fill in the inputs below
+# ─────────────────────────────────────────────
+on:
+  workflow_dispatch:
+    inputs:
+      board_id:
+        description: >
+          Mac Board ID  — examples:
+            Mac-827FAC58A8FDFA22  (macOS Sonoma)
+            Mac-4B682C642B45593E  (macOS Ventura)
+            Mac-AA95B1DDAB278B95  (macOS Monterey)
+            Mac-2BD1B31983FE1663  (macOS Big Sur)
+        required: true
+        default: "Mac-827FAC58A8FDFA22"
+      mlb:
+        description: "MLB serial number (leave default for a generic download)"
+        required: false
+        default: "00000000000000000"
+
+jobs:
+  download-recovery:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      # ── 0. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 1. Parse trigger parameters ────────────────────────────────────────
+      - name: Parse commit message or workflow inputs
+        id: params
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            BOARD_ID="${{ github.event.inputs.board_id }}"
+            MLB="${{ github.event.inputs.mlb }}"
+            echo "▶ Manual trigger — board-id: $BOARD_ID  mlb: $MLB"
+            echo "should_run=true"  >> "$GITHUB_OUTPUT"
+          else
+            MSG=$(git log -1 --pretty=%B)
+            echo "Commit message: $MSG"
+
+            if echo "$MSG" | grep -qP 'macrecovery:'; then
+              BOARD_ID=$(echo "$MSG" | grep -oP 'board-id:\s*\K\S+')
+              MLB=$(echo "$MSG"      | grep -oP 'mlb:\s*\K\S+')
+              # Fall back to safe defaults if the patterns aren't in the message
+              BOARD_ID="${BOARD_ID:-Mac-827FAC58A8FDFA22}"
+              MLB="${MLB:-00000000000000000}"
+              echo "▶ Push trigger — board-id: $BOARD_ID  mlb: $MLB"
+              echo "should_run=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "⏭ No 'macrecovery:' keyword in commit message — skipping job."
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+          echo "board_id=${BOARD_ID}" >> "$GITHUB_OUTPUT"
+          echo "mlb=${MLB}"           >> "$GITHUB_OUTPUT"
+
+      # ── 2. Download OpenCore release zip ──────────────────────────────────
+      - name: Download OpenCore 1.0.7 release
+        if: steps.params.outputs.should_run == 'true'
+        run: |
+          mkdir -p opencore_tmp
+          echo "⬇️ Downloading OpenCore-1.0.7-RELEASE.zip …"
+          curl -fL \
+            --retry 3 \
+            --retry-delay 5 \
+            -o opencore_tmp/OpenCore.zip \
+            "https://github.com/acidanthera/OpenCorePkg/releases/download/1.0.7/OpenCore-1.0.7-RELEASE.zip"
+          echo "✅ Download complete — $(du -h opencore_tmp/OpenCore.zip | cut -f1)"
+
+      # ── 3. Extract OpenCore zip ────────────────────────────────────────────
+      - name: Extract OpenCore zip
+        if: steps.params.outputs.should_run == 'true'
+        run: |
+          echo "📂 Extracting OpenCore.zip …"
+          unzip -q opencore_tmp/OpenCore.zip -d opencore_tmp/extracted
+          echo "✅ Extracted to opencore_tmp/extracted/"
+          ls opencore_tmp/extracted/Utilities/macrecovery/
+
+      # ── 4. Set up Python (stdlib-only; no pip needed) ─────────────────────
+      - name: Set up Python 3
+        if: steps.params.outputs.should_run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      # ── 5. Run macrecovery.py ──────────────────────────────────────────────
+      #    All required libraries (argparse, hashlib, json, linecache, os,
+      #    random, struct, string, sys) are part of the Python standard library
+      #    — no pip install step is needed.
+      - name: Run macrecovery.py
+        if: steps.params.outputs.should_run == 'true'
+        run: |
+          mkdir -p recovery_output
+          BOARD_ID="${{ steps.params.outputs.board_id }}"
+          MLB="${{ steps.params.outputs.mlb }}"
+          SCRIPT="opencore_tmp/extracted/Utilities/macrecovery/macrecovery.py"
+
+          echo "🍎 Running macrecovery.py …"
+          echo "   board-id : $BOARD_ID"
+          echo "   mlb      : $MLB"
+
+          python3 "$SCRIPT" \
+            -b "$BOARD_ID" \
+            -m "$MLB" \
+            -o recovery_output \
+            download
+
+          echo "✅ macrecovery finished. Output files:"
+          ls -lah recovery_output/
+
+      # ── 6. Pack into multi-part zip (90 MB parts) ─────────────────────────
+      - name: Create multi-part zip archive
+        if: steps.params.outputs.should_run == 'true'
+        run: |
+          FILE_COUNT=$(find recovery_output/ -maxdepth 1 -type f | wc -l)
+          if [ "$FILE_COUNT" -eq 0 ]; then
+            echo "❌ No files found in recovery_output/ — nothing to zip."
+            exit 1
+          fi
+
+          mkdir -p downloads
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          ARCHIVE_BASE="downloads/macOS_recovery_${TIMESTAMP}"
+
+          echo "📦 Zipping $FILE_COUNT file(s) into 90 MB parts → ${ARCHIVE_BASE}.zip …"
+
+          # zip -s creates split volumes: .zip, .z01, .z02, …
+          # -j = junk paths (store filenames only, no directory tree)
+          zip -s 90m "${ARCHIVE_BASE}.zip" -j recovery_output/*
+
+          echo "✅ Archive parts created:"
+          ls -lah downloads/
+
+      # ── 7. Clean up temp folders ───────────────────────────────────────────
+      - name: Clean up temporary files
+        if: steps.params.outputs.should_run == 'true'
+        run: |
+          rm -rf opencore_tmp recovery_output
+          echo "🧹 Temp folders removed."
+
+      # ── 8. Commit & push in batches of 5 files ────────────────────────────
+      - name: Commit and push downloads (batched)
+        if: steps.params.outputs.should_run == 'true'
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          git config user.name  "github-actions"
+          git config user.email "github-actions@github.com"
+
+          # Collect all new / modified files under downloads/
+          mapfile -t ALL_FILES < <(
+            git ls-files --others --modified --exclude-standard downloads/
+          )
+          TOTAL=${#ALL_FILES[@]}
+          echo "📦 Total files to push: $TOTAL"
+
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "Nothing to commit."
+            exit 0
+          fi
+
+          BATCH_SIZE=5
+          BATCH_NUM=0
+
+          for (( i=0; i<TOTAL; i+=BATCH_SIZE )); do
+            BATCH_NUM=$(( BATCH_NUM + 1 ))
+            BATCH=("${ALL_FILES[@]:i:BATCH_SIZE}")
+
+            echo "🚀 Pushing batch $BATCH_NUM: files $((i+1))–$(( i + ${#BATCH[@]} )) of $TOTAL"
+            git add "${BATCH[@]}"
+            git commit -m "Add macOS recovery archive — batch $BATCH_NUM [skip ci]"
+
+            # Rebase before each push to stay in sync with prior batches
+            git pull --rebase origin "$BRANCH"
+            git push origin HEAD:"$BRANCH"
+            echo "✅ Batch $BATCH_NUM pushed."
+          done
+
+          echo "🎉 All $TOTAL file(s) pushed in $BATCH_NUM batch(es)."
