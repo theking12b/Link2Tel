@@ -11,7 +11,7 @@ on:
 workflow_dispatch:
     inputs:
       board_id:
-        description: >F
+        description: >
           Mac Board ID  — examples:
             Mac-827FAC58A8FDFA22  (macOS Sonoma)
             Mac-4B682C642B45593E  (macOS Ventura)
