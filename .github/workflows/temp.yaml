@@ -8,8 +8,7 @@ name: OpenCore macrecovery Downloader
 #   Manual → fill in the inputs below
 # ─────────────────────────────────────────────
 on:
-
-  workflow_dispatch:
+workflow_dispatch:
     inputs:
       board_id:
         description: >F
