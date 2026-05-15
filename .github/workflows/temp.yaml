@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       board_id:
-        description: >
+        description: >F
           Mac Board ID  — examples:
             Mac-827FAC58A8FDFA22  (macOS Sonoma)
             Mac-4B682C642B45593E  (macOS Ventura)
@@ -123,7 +123,7 @@ jobs:
           # `script -q -c "…" /dev/null` runs the command inside a real PTY so
           # that os.get_terminal_size() succeeds. Exit code is forwarded.
           script -q -c \
-            "python3 '$SCRIPT' -b '$BOARD_ID' -m '$MLB' -o recovery_output download" \
+            "python3 '$SCRIPT' -b Mac-CFF7D910A743CAAF -m 00000000000000000 -os latest download -o recovery_output" \
             /dev/null
 
           echo "✅ macrecovery finished. Output files:"
